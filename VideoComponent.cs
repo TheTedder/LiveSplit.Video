@@ -1,13 +1,13 @@
-﻿//using AxAXVLC;
-using LiveSplit.Model;
+﻿using LiveSplit.Model;
 using LiveSplit.UI.Components;
 using System;
 using System.Windows.Forms;
+using System.Windows.Forms.Integration;
 using System.Drawing;
 using System.Xml;
-using LibVLCSharp.Shared;
-using LibVLCSharp.WinForms;
 using System.Diagnostics;
+using System.Windows.Controls;
+using System.ComponentModel;
 
 namespace LiveSplit.Video
 {
@@ -18,6 +18,10 @@ namespace LiveSplit.Video
         public System.Timers.Timer SynchronizeTimer { get; set; }
 
         private class VLCErrorException : Exception { }
+
+        public ElementHost elementHost => (ElementHost)Control;
+
+        public MediaElement mediaElement => (MediaElement)elementHost.Child;
 
         protected string OldMRL { get; set; }
 
@@ -35,31 +39,15 @@ namespace LiveSplit.Video
 
         public bool Initialized { get; set; }
 
-        private static readonly LibVLC libVLC;
 
-        static VideoComponent()
-        {
-            Core.Initialize();
-            libVLC = new LibVLC(new string[] { });
-        }
-
-        public VideoComponent(LiveSplitState state) : this(state, CreateVLCControl())
+        public VideoComponent(LiveSplitState state) : this(state, CreateControl())
         {
         }
 
-        public VideoComponent(LiveSplitState state, VideoView vview) : base(state,vview, ex => ErrorCallback(state.Form,ex))
+        public VideoComponent(LiveSplitState state, ElementHost host) : base(state,host, ex => ErrorCallback(state.Form,ex))
         {
             Settings = new VideoSettings();
             State = state;
-            vview.MediaPlayer = new MediaPlayer(libVLC)
-            {
-                EnableKeyInput = false,
-                EnableMouseInput = false
-            };
-            vview.Height = (int)Settings.Height;
-            vview.Width = (int)Settings.Width;
-            vview.ResumeLayout();
-            vview.Show();
 
             state.OnReset += state_OnReset;
             state.OnStart += state_OnStart;
@@ -88,9 +76,11 @@ namespace LiveSplit.Video
             {
                 lock (Control)
                 {
-                    ((VideoView)Control).MediaPlayer.Play();
+                    lock (mediaElement)
+                        mediaElement.Play();
                 }
             });
+            
         }
 
         void state_OnPause(object sender, EventArgs e)
@@ -99,9 +89,11 @@ namespace LiveSplit.Video
             {
                 lock (Control)
                 {
-                    ((VideoView)Control).MediaPlayer.Pause();
+                    lock (mediaElement)
+                        mediaElement.Pause();
                 }
             });
+
         }
 
         void state_OnStart(object sender, EventArgs e)
@@ -110,9 +102,11 @@ namespace LiveSplit.Video
             {
                 lock (Control)
                 {
-                    ((VideoView)Control).MediaPlayer.Play();
                     if (activated)
                         Control.Visible = true;
+
+                    lock (mediaElement)
+                        mediaElement.Play();
                 }
             });
             Synchronize();
@@ -134,37 +128,40 @@ namespace LiveSplit.Video
                 SynchronizeTimer.Enabled = false;
             InvokeIfNeeded(() =>
             {
-                lock (Control)
-                    //VLC.input.Time = (GetCurrentTime() + offset + Settings.Offset).TotalMilliseconds;
-                    ((VideoView)Control).MediaPlayer.Time = (GetCurrentTime() + offset + Settings.Offset).Milliseconds;
+                lock (mediaElement)
+                {
+                    //((VideoView)Control).MediaPlayer.Time = (GetCurrentTime() + offset + Settings.Offset).Milliseconds;
+                    mediaElement.Position = GetCurrentTime() + offset + Settings.Offset;
+                }
             });
+
             SynchronizeTimer = new System.Timers.Timer(1000);
 
             SynchronizeTimer.Elapsed += (s, ev) =>
             {
-                InvokeIfNeeded(() =>
+                //if (((VideoView)Control).MediaPlayer.State == VLCState.Playing)
+                if (State.CurrentPhase == TimerPhase.Running)//kind shitty that this is how we have to do this
                 {
-                    lock (Control)
+                    InvokeIfNeeded(() =>
                     {
-                        //if (VLC.input.state == 3)
-                        if (((VideoView)Control).MediaPlayer.State == VLCState.Playing)
+                        lock (Control)
                         {
                             var currentTime = GetCurrentTime();
-                            //var delta = VLC.input.Time - (currentTime + offset + Settings.Offset).TotalMilliseconds;
-                            var delta = ((VideoView)Control).MediaPlayer.Time - (currentTime + offset + Settings.Offset).Milliseconds;
+                            //var delta = ((VideoView)Control).MediaPlayer.Time - (currentTime + offset + Settings.Offset).Milliseconds;
+                            var delta = (mediaElement.Position - (currentTime + offset + Settings.Offset)).Milliseconds;
                             if (Math.Abs(delta) > 500)
-                                //VLC.input.Time = (currentTime + offset + Settings.Offset).TotalMilliseconds + Math.Max(0, -delta);
-                                ((VideoView)Control).MediaPlayer.Time = (currentTime + offset + Settings.Offset).Milliseconds + Math.Max(0, -delta);
+                                mediaElement.Position = (currentTime + offset + Settings.Offset) + new TimeSpan(0, 0, 0, 0, Math.Max(0, -delta));
                             else
                                 SynchronizeTimer.Enabled = false;
                         }
-                        //else if (VLC.state == 5)
-                        else if (((VideoView)Control).MediaPlayer.State == VLCState.Stopped)
-                        {
-                            SynchronizeTimer.Enabled = false;
-                        }
-                    }
-                });
+                    });
+
+                }
+                //else if (((VideoView)Control).MediaPlayer.State == VLCState.Stopped)
+                else if (State.CurrentPhase == TimerPhase.NotRunning)
+                {
+                    SynchronizeTimer.Enabled = false;
+                }
             };
 
             SynchronizeTimer.Enabled = true;
@@ -172,34 +169,33 @@ namespace LiveSplit.Video
 
         void state_OnReset(object sender, TimerPhase e)
         {
+            mediaElement.Stop();
             InvokeIfNeeded(() =>
             {
                 lock (Control)
                 {
-                    //VLC.playlist.stop();
-                    ((VideoView)Control).MediaPlayer.Stop();
                     if (activated)
                         Control.Visible = false;
                 }
             });
         }
 
-        private static VideoView CreateVLCControl()
+        private static ElementHost CreateControl()
         {
-            VideoView vv = new VideoView()
+            return new ElementHost()
             {
-                //System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(ComponentHostForm));
-                //((System.ComponentModel.ISupportInitialize)(vlc)).BeginInit();
-                Name = "vlc",
+                Child = new MediaElement()
+                {
+                    LoadedBehavior = MediaState.Manual,
+                    Name = "player"
+                },
                 AllowDrop = false,
-                Size = new Size(320, 340)
+                Location = new Point(),
+                Name = "playerhost"
             };
-            //vlc.OcxState = ((AxHost.State)(resources.GetObject("axVLCPlugin21.OcxState")));
-            //((System.ComponentModel.ISupportInitialize)(vlc)).EndInit();
-            return vv;
         }
 
-        public override Control GetSettingsControl(UI.LayoutMode mode)
+        public override System.Windows.Forms.Control GetSettingsControl(UI.LayoutMode mode)
         {
             Settings.Mode = mode;
             return Settings;
@@ -239,9 +235,31 @@ namespace LiveSplit.Video
 
         public override void Update(UI.IInvalidator invalidator, LiveSplitState state, float width, float height, UI.LayoutMode mode)
         {
-            //if (!VLC.IsDisposed)
-            if(!Control.IsDisposed && !state.Form.IsDisposed)
+            if (!Control.IsDisposed && !state.Form.IsDisposed)
             {
+                if (Control.IsHandleCreated)
+                {
+                    Control.Invoke((Action)(() =>
+                   {
+                       lock (Control)
+                       {
+                           lock (mediaElement)
+                           {
+                               switch (mode)
+                               {
+                                   case UI.LayoutMode.Horizontal:
+                                       mediaElement.Height = height;
+                                       break;
+                                   case UI.LayoutMode.Vertical:
+                                       mediaElement.Width = width;
+                                       break;
+                               }
+                           }
+                           Control.Invalidate();
+                       }
+                   }));
+                }
+
                 base.Update(invalidator, state, width, height, mode);
 
                 if (!Initialized)
@@ -257,32 +275,33 @@ namespace LiveSplit.Video
                 }
                 else
                 {
-                    if (((VideoView)Control).MediaPlayer != null && OldMRL != Settings.MRL && !string.IsNullOrEmpty(Settings.MRL))
+                    InvokeIfNeeded(() =>
                     {
-                        InvokeIfNeeded(() =>
+                        lock (Control)
                         {
-                            lock (Control)
+                            //if (((VideoView)Control).MediaPlayer != null && OldMRL != Settings.MRL && !string.IsNullOrEmpty(Settings.MRL))
+                            if (mediaElement != null && OldMRL != Settings.MRL && !string.IsNullOrEmpty(Settings.MRL))
                             {
                                 //VLC.playlist.add(Settings.MRL);
-                                ((VideoView)Control).MediaPlayer.Media = new Media(libVLC, Settings.MRL);
-                                Debug.WriteLine("Video Component media changed.");
+                                //((VideoView)Control).MediaPlayer.Media = new Media(libVLC, Settings.MRL);
+                                var uri = new Uri(Settings.MRL);
+                                mediaElement.Source = uri;
+                                Debug.WriteLine("Video Component media changed to " + uri.AbsolutePath);
                             }
-                        });
-                    }
-                    OldMRL = Settings.MRL;
+                            OldMRL = Settings.MRL;
 
-                    if (((VideoView)Control).MediaPlayer != null)
-                    {
-                        InvokeIfNeeded(() =>
-                        {
-                            lock (Control)
+                            //if (((VideoView)Control).MediaPlayer != null)
+                            if (mediaElement != null)
                             {
                                 //VLC.Mute = true;
-                                ((VideoView)Control).MediaPlayer.Mute = true;
-                                ((VideoView)Control).MediaPlayer.Volume = 5;
+                                //((VideoView)Control).MediaPlayer.Mute = true;
+                                //((VideoView)Control).MediaPlayer.Volume = 5;
+                                mediaElement.IsMuted = true;
+                                mediaElement.Volume = 0.05;
                             }
-                        });
-                    }
+                        }
+                    });
+                    
                 }
             }
         }
