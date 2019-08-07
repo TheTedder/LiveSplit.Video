@@ -7,7 +7,6 @@ using System.Drawing;
 using System.Xml;
 using System.Diagnostics;
 using System.Windows.Controls;
-using System.ComponentModel;
 
 namespace LiveSplit.Video
 {
@@ -34,11 +33,6 @@ namespace LiveSplit.Video
         public override float VerticalHeight => Settings.Height;
 
         public override float MinimumWidth => 10;
-
-        //public AxVLCPlugin2 VLC { get; set; }
-
-        public bool Initialized { get; set; }
-
 
         public VideoComponent(LiveSplitState state) : this(state, CreateControl())
         {
@@ -102,8 +96,7 @@ namespace LiveSplit.Video
             {
                 lock (Control)
                 {
-                    if (activated)
-                        Control.Visible = true;
+                    Control.Visible = true;
 
                     lock (mediaElement)
                         mediaElement.Play();
@@ -174,21 +167,21 @@ namespace LiveSplit.Video
             {
                 lock (Control)
                 {
-                    if (activated)
-                        Control.Visible = false;
+                    Control.Visible = false;
                 }
             });
         }
 
         private static ElementHost CreateControl()
         {
+            var me = new MediaElement();
+            me.BeginInit();
+            me.LoadedBehavior = MediaState.Manual;
+            me.Name = "player";
+            me.EndInit();
             return new ElementHost()
             {
-                Child = new MediaElement()
-                {
-                    LoadedBehavior = MediaState.Manual,
-                    Name = "player"
-                },
+                Child = me,
                 AllowDrop = false,
                 Location = new Point(),
                 Name = "playerhost"
@@ -235,45 +228,12 @@ namespace LiveSplit.Video
 
         public override void Update(UI.IInvalidator invalidator, LiveSplitState state, float width, float height, UI.LayoutMode mode)
         {
+            State = state;
             if (!Control.IsDisposed && !state.Form.IsDisposed)
             {
-                if (Control.IsHandleCreated)
-                {
-                    Control.Invoke((Action)(() =>
-                   {
-                       lock (Control)
-                       {
-                           lock (mediaElement)
-                           {
-                               switch (mode)
-                               {
-                                   case UI.LayoutMode.Horizontal:
-                                       mediaElement.Height = height;
-                                       break;
-                                   case UI.LayoutMode.Vertical:
-                                       mediaElement.Width = width;
-                                       break;
-                               }
-                           }
-                           Control.Invalidate();
-                       }
-                   }));
-                }
-
                 base.Update(invalidator, state, width, height, mode);
 
-                if (!Initialized)
-                {
-                    InvokeIfNeeded(() =>
-                    {
-                        lock (Control)
-                        {
-                            Control.Visible = !Control.Created;
-                            Initialized = Control.Created;
-                        }
-                    });
-                }
-                else
+                if (Control.Created)
                 {
                     InvokeIfNeeded(() =>
                     {
@@ -308,7 +268,15 @@ namespace LiveSplit.Video
 
         public override void Dispose()
         {
-            base.Dispose();
+            State.Form.Invoke((Action)delegate
+            {
+                lock (Control)
+                {
+                    mediaElement.Close();
+                    elementHost.Child = null;
+                }
+                base.Dispose();
+            });
 
             State.OnReset -= state_OnReset;
             State.OnStart -= state_OnStart;
